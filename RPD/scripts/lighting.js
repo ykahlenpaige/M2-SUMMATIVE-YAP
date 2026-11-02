@@ -50,6 +50,64 @@ const statueLights = [-1, 1].map(function (side) {
   return light;
 });
 
+// A shaft of light falling from high in the roof onto the statue, like the game: a spotlight (lights her up) plus a soft see-through beam (the visible "light ray").
+const beamDayOpacity = 0.2;
+const beamNightOpacity = 0.55;
+const beamTop = new THREE.Vector3(statuePos.x - 3.0, springY + 1.2, statuePos.z - 3.2);    // up in the roof, a bit behind and to the left of the statue
+const beamBottom = new THREE.Vector3(statuePos.x, statueBaseY, statuePos.z + 0.2);          // lands on top of the dais
+const beamTopRadius = 0.5;
+const beamBottomRadius = 2.1;
+
+const ceilingStatueDayIntensity = 100;
+const ceilingStatueNightIntensity = 320;
+const ceilingStatueLight = makeSpot(0xf2e8d8, 30, 0.3, 0.7);
+
+ceilingStatueLight.position.set(statuePos.x, springY - 0.8, statuePos.z + 3.2);
+ceilingStatueLight.target.position.set(statuePos.x, statueBaseY + 3.4, statuePos.z);
+
+const beamUniforms = { uOpacity: { value: beamDayOpacity }, uColor: { value: new THREE.Color(0xe6dccc) } };
+const beamLength = beamTop.distanceTo(beamBottom);
+const beamGeometry = new THREE.CylinderGeometry(beamTopRadius, beamBottomRadius, beamLength, 40, 1, true);
+beamGeometry.rotateX(-Math.PI / 2);                
+beamGeometry.translate(0, 0, beamLength / 2);     
+const beamMaterial = new THREE.ShaderMaterial({
+  uniforms: beamUniforms,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  side: THREE.DoubleSide,
+  vertexShader: `
+    varying vec3 vNormalW;
+    varying vec3 vViewW;
+    varying float vAlong;
+    void main() {
+      vec4 world = modelMatrix * vec4(position, 1.0);
+      vNormalW = normalize(mat3(modelMatrix) * normal);
+      vViewW = normalize(cameraPosition - world.xyz);
+      vAlong = uv.y;                                  // 1 at the roof end, 0 at the statue end
+      gl_Position = projectionMatrix * viewMatrix * world;
+    }`,
+  fragmentShader: `
+    uniform float uOpacity;
+    uniform vec3 uColor;
+    varying vec3 vNormalW;
+    varying vec3 vViewW;
+    varying float vAlong;
+    void main() {
+      float edge = pow(abs(dot(normalize(vNormalW), normalize(vViewW))), 1.6);   // soft edges: brightest through the middle of the beam
+      float fromRoof = smoothstep(1.0, 0.8, vAlong);                              // fades in below the roof
+      float toStatue = smoothstep(0.0, 0.12, vAlong);                             // fades out as it reaches the statue
+      float strength = mix(0.35, 1.0, vAlong);                                    // a little brighter near the top
+      gl_FragColor = vec4(uColor, edge * fromRoof * toStatue * strength * uOpacity);
+    }`
+});
+const lightBeam = new THREE.Mesh(beamGeometry, beamMaterial);
+lightBeam.position.copy(beamTop);
+lightBeam.lookAt(beamBottom);
+lightBeam.renderOrder = 5;
+lightBeam.userData.noShadow = true;
+scene.add(lightBeam);
+
 // reception desk light (on at night)
 const deskLightDayIntensity = 0;
 const deskLightNightIntensity = 40;
@@ -74,6 +132,8 @@ function updateDayNight() {
   sconceLights.forEach(function (l) { l.intensity = night ? sconceLightIntensity : 0; });
   statueLights.forEach(function (l) { l.intensity = night ? statueLightIntensity : 0; });
   deskLight.intensity = night ? deskLightNightIntensity : deskLightDayIntensity;
+  ceilingStatueLight.intensity = night ? ceilingStatueNightIntensity : ceilingStatueDayIntensity;
+  beamUniforms.uOpacity.value = night ? beamNightOpacity : beamDayOpacity;
 
   setDustNight(night);
 }
@@ -86,6 +146,17 @@ scene.traverse(function (object) {
   object.castShadow = object.material !== glassMaterial && !object.userData.noShadow;
   object.receiveShadow = true;
 });
+
+const statueShadowWatcher = setInterval(function () {
+  let found = false;
+  statueAnchor.traverse(function (object) {
+    if (!object.isMesh) return;
+    found = true;
+    object.castShadow = false;
+    object.receiveShadow = false;
+  });
+  if (found) clearInterval(statueShadowWatcher);
+}, 300);
 
 window.addEventListener('keydown', function (e) {
   if (e.key.toLowerCase() === 'n') {
